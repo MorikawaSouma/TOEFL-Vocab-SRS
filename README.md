@@ -325,4 +325,3 @@ supernova	超新星	A supernova marks the explosive death of a massive star.	n	a
 ## License
 
 MIT
-
