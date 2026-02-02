@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>记单词 - 类 Anki 复习</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            boxShadow: {
+              soft: "0 10px 30px rgba(0,0,0,0.08)",
+            },
+          },
+        },
+      };
+    </script>
+
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body class="min-h-screen bg-slate-50 text-slate-900 selection:bg-slate-900 selection:text-white">
+    <div class="mx-auto max-w-7xl px-6 py-10">
+      <header class="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div class="text-xl font-semibold tracking-tight">托你的福  雅你的思</div>
+          <div class="mt-1 text-sm text-slate-500">Ever-burning wings, carry me from this mortal coil.</div>
+        </div>
+
+        <nav class="flex flex-wrap gap-2">
+          <button class="nav-btn" data-view="decks">牌组</button>
+          <button class="nav-btn" data-view="import">导入</button>
+          <button class="nav-btn" data-view="review">复习</button>
+          <button class="nav-btn" data-view="stats">统计</button>
+        </nav>
+      </header>
+
+      <main class="mt-8">
+        <section id="view-decks" class="view">
+          <div class="card">
+            <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+              <div>
+                <div class="text-base font-semibold">牌组管理</div>
+                <div class="text-sm text-slate-500">创建牌组、选择当前牌组、查看到期数量</div>
+              </div>
+              <div class="flex gap-2">
+                <input id="new-deck-name" class="input" placeholder="新牌组名称" />
+                <button id="btn-create-deck" class="btn btn-primary">创建</button>
+              </div>
+            </div>
+
+            <div class="mt-6">
+              <div id="deck-list" class="grid gap-3 md:grid-cols-2"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-import" class="view hidden">
+          <div class="card">
+            <div class="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+              <div>
+                <div class="text-base font-semibold">导入单词</div>
+                <div class="text-sm text-slate-500">支持：<span class="font-mono">word\tmeaning</span>（或逗号分隔）。可选列：<span class="font-mono">example / pos / topic / syn / collocation</span></div>
+              </div>
+              <div class="min-w-[220px]">
+                <label class="label">导入到牌组</label>
+                <select id="import-deck-select" class="input"></select>
+              </div>
+            </div>
+
+            <div class="mt-4 grid gap-4 md:grid-cols-2">
+              <div>
+                <label class="label">粘贴内容</label>
+                <textarea id="import-text" class="textarea" placeholder="例如：\napple\t苹果\nbanana,香蕉\nword\tmeaning\texample sentence"></textarea>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button id="btn-parse-import" class="btn btn-primary">解析并预览</button>
+                  <button id="btn-clear-import" class="btn">清空</button>
+                </div>
+                <div class="mt-2 text-xs text-slate-500" id="import-hint"></div>
+              </div>
+
+              <div>
+                <div class="flex items-center justify-between">
+                  <label class="label">预览</label>
+                  <div class="text-xs text-slate-500" id="import-preview-count"></div>
+                </div>
+                <div id="import-preview" class="max-h-[360px] overflow-auto rounded-xl border border-slate-200 bg-white"></div>
+                <div class="mt-3 flex flex-wrap items-end gap-2">
+                  <div class="min-w-[200px]">
+                    <label class="label">重复策略（同牌组同单词）</label>
+                    <select id="import-dup-mode" class="input">
+                      <option value="skip" selected>跳过重复</option>
+                      <option value="overwrite">覆盖旧卡</option>
+                    </select>
+                  </div>
+                  <button id="btn-commit-import" class="btn btn-primary" disabled>确认导入</button>
+                  <button id="btn-download-template" class="btn">下载模板</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-review" class="view hidden">
+          <div class="card">
+            <div class="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+              <div>
+                <div class="text-base font-semibold">复习</div>
+                <div class="text-sm text-slate-500">先看单词，点击显示释义；再选择记忆程度以更新间隔</div>
+              </div>
+              <div class="flex flex-col gap-2 md:flex-row md:items-end md:justify-end md:gap-3">
+                <div class="min-w-[220px]">
+                  <label class="label">复习牌组</label>
+                  <select id="review-deck-select" class="input"></select>
+                </div>
+                <div class="min-w-[220px]">
+                  <label class="label">每日新增上限</label>
+                  <input id="new-per-day" type="number" min="0" step="1" class="input" />
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-4">
+              <div id="review-summary" class="flex flex-wrap gap-4 text-base text-slate-600"></div>
+
+              <div class="mt-8 rounded-2xl border border-slate-200 bg-white p-8 shadow-soft review-card">
+                <div class="flex items-center justify-end mb-2">
+                  <button id="btn-skip" class="btn">跳过</button>
+                </div>
+
+                <div class="mt-2">
+                  <div class="text-3xl font-semibold tracking-tight" id="card-front">—</div>
+                  <div class="mt-4 hidden text-base text-slate-700" id="card-back"></div>
+                  <div class="mt-4 hidden text-sm text-slate-500" id="card-example"></div>
+
+                  <div class="mt-5 flex flex-wrap items-end gap-3">
+                    <div class="min-w-[220px]">
+                      <label class="label">复习模式</label>
+                      <select id="review-mode" class="input">
+                        <option value="en2zh" selected>英→中（识别）</option>
+                        <option value="zh2en">中→英（拼写）</option>
+                      </select>
+                    </div>
+                    <div class="min-w-[220px]">
+                      <label class="label">筛选：topic（可选）</label>
+                      <input id="filter-topic" class="input" placeholder="如 geology / biology" />
+                    </div>
+                    <div class="min-w-[220px]">
+                      <label class="label">筛选：pos（可选）</label>
+                      <input id="filter-pos" class="input" placeholder="如 n / v / adj" />
+                    </div>
+                    <button id="btn-apply-filter" class="btn">应用筛选</button>
+                  </div>
+
+                  <div class="mt-4 hidden" id="spell-area">
+                    <label class="label">拼写（中→英）</label>
+                    <div class="flex flex-wrap items-end gap-2">
+                      <input id="spell-input" class="input" placeholder="请输入单词拼写" />
+                      <button id="btn-check-spell" class="btn btn-primary">提交</button>
+                      <button id="btn-reveal-spell" class="btn">显示答案</button>
+                      <button id="btn-pronounce" class="btn">发音</button>
+                    </div>
+                    <div class="mt-2 text-sm" id="spell-feedback"></div>
+                  </div>
+                </div>
+
+                <div class="mt-7 flex flex-wrap gap-3" id="grade-area">
+                  <button id="btn-show" class="btn btn-primary">显示释义</button>
+                  <button class="grade-btn btn" data-grade="0" disabled>忘了</button>
+                  <button class="grade-btn btn" data-grade="3" disabled>模糊</button>
+                  <button class="grade-btn btn" data-grade="5" disabled>记得</button>
+                </div>
+
+                <div class="mt-4 text-xs text-slate-500" id="card-meta"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-stats" class="view hidden">
+          <div class="card">
+            <div class="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+              <div>
+                <div class="text-base font-semibold">统计</div>
+                <div class="text-sm text-slate-500">基于本地学习记录（每天汇总）</div>
+              </div>
+              <div class="min-w-[220px]">
+                <label class="label">统计牌组</label>
+                <select id="stats-deck-select" class="input"></select>
+              </div>
+            </div>
+
+            <div class="mt-4 grid gap-3 md:grid-cols-4">
+              <div class="stat">
+                <div class="stat-k">今日学习（总）</div>
+                <div class="stat-v" id="stat-today">0</div>
+              </div>
+              <div class="stat">
+                <div class="stat-k">今日正确率</div>
+                <div class="stat-v" id="stat-acc">0%</div>
+              </div>
+              <div class="stat">
+                <div class="stat-k">到期复习</div>
+                <div class="stat-v" id="stat-due">0</div>
+              </div>
+              <div class="stat">
+                <div class="stat-k">待学新卡</div>
+                <div class="stat-v" id="stat-new">0</div>
+              </div>
+            </div>
+
+            <div class="mt-4 grid gap-4 md:grid-cols-2">
+              <div class="rounded-2xl border border-slate-200 bg-white p-4">
+                <div class="text-sm font-semibold">近 14 天游走</div>
+                <div class="mt-3" id="sparkline"></div>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-white p-4">
+                <div class="text-sm font-semibold">按标签分析（正确率）</div>
+                <div class="mt-3 grid gap-3 md:grid-cols-2">
+                  <div>
+                    <div class="text-xs text-slate-500">topic（学科主题）</div>
+                    <div id="stats-topic" class="mt-2 max-h-[220px] overflow-auto rounded-xl border border-slate-200"></div>
+                  </div>
+                  <div>
+                    <div class="text-xs text-slate-500">pos（词性）</div>
+                    <div id="stats-pos" class="mt-2 max-h-[220px] overflow-auto rounded-xl border border-slate-200"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+              <div class="text-sm font-semibold">快捷操作</div>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button id="btn-export" class="btn">导出数据（JSON）</button>
+                <label class="btn cursor-pointer">
+                  导入备份（JSON）
+                  <input id="backup-file" type="file" accept="application/json" class="hidden" />
+                </label>
+                <button id="btn-reset" class="btn btn-danger">清空全部数据</button>
+              </div>
+              <div class="mt-3 text-xs text-slate-500">提示：导出文件请自行妥善保存；清空操作不可撤销。</div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="mt-8 text-xs text-slate-400">本应用只使用浏览器本地存储，不会上传你的数据。</footer>
+    </div>
+
+    <div id="toast" class="pointer-events-none fixed bottom-5 left-1/2 hidden -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2 text-sm text-white shadow-soft"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
+
