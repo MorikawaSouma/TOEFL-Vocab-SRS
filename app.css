@@ -35,6 +35,33 @@
 /* 小表格容器更精致 */
 #stats-topic,#stats-pos,#import-preview{background:rgba(255,255,255,.85)}
 
+/* AI Drawer */
+.ai-drawer-open #ai-drawer { transform: translateX(0); }
+.ai-drawer-open #btn-toggle-ai { transform: scale(0.8); opacity: 0; pointer-events: none; }
+.ai-message { padding: 0.75rem 1rem; border-radius: 1rem; max-width: 85%; }
+.ai-message.user { background: rgb(17 24 39); color: white; border-bottom-right-radius: 0.25rem; align-self: flex-end; }
+.ai-message.assistant { background: rgba(255,255,255,.9); border: 1px solid rgba(226,232,240,.9); border-bottom-left-radius: 0.25rem; align-self: flex-start; }
+
+/* Markdown typography inside AI assistant bubble */
+.ai-message.assistant :first-child{margin-top:0}
+.ai-message.assistant :last-child{margin-bottom:0}
+.ai-message.assistant p{margin:.4rem 0;line-height:1.55}
+.ai-message.assistant h1,.ai-message.assistant h2,.ai-message.assistant h3{margin:.65rem 0 .35rem 0;font-weight:800;letter-spacing:-.01em}
+.ai-message.assistant h1{font-size:1.05rem}
+.ai-message.assistant h2{font-size:1rem}
+.ai-message.assistant h3{font-size:.95rem}
+.ai-message.assistant ul,.ai-message.assistant ol{margin:.4rem 0 .4rem 1.2rem}
+.ai-message.assistant li{margin:.2rem 0}
+.ai-message.assistant code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:.85em;background:rgba(15,23,42,.06);padding:.1rem .35rem;border-radius:.4rem}
+.ai-message.assistant pre{margin:.6rem 0;padding:.75rem .85rem;border-radius:.9rem;background:rgb(15 23 42);color:#fff;overflow:auto}
+.ai-message.assistant pre code{background:transparent;padding:0;font-size:.85em;color:inherit}
+.ai-message.assistant blockquote{margin:.6rem 0;padding:.3rem .75rem;border-left:3px solid rgba(15,23,42,.25);color:rgb(71 85 105)}
+.ai-message.assistant a{color:rgb(2 132 199);text-decoration:underline}
+
+.ai-message.loading { color: rgb(100 116 139); }
+.ai-message.error { background: rgb(254 226 226); color: rgb(185 28 28); border-color: rgb(252 165 165); }
+
+
 /* 复习卡片正文更大、更舒展 */
 .card-front-big{font-size:2.4rem !important;line-height:2.7rem !important;letter-spacing:-.02em}
 .card-back-big{font-size:1.25rem !important;line-height:1.9rem !important}

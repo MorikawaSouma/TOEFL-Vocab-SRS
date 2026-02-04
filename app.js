@@ -1,4 +1,4 @@
-/* global $, localStorage */
+/* global $, localStorage, DOMPurify, marked */
 
 (function () {
   const STORAGE_KEY = "vocab_anki_like_v1";
@@ -34,6 +34,29 @@
     }, 1800);
   }
 
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  // TTS (global-scope)
+  function pronounceText(text) {
+    const t = String(text || "").trim();
+    if (!t) return;
+    if (!("speechSynthesis" in window)) {
+      toast("当前浏览器不支持发音");
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(t);
+    u.lang = "en-US";
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  }
+
   function defaultState() {
     const deckId = uid("deck");
     return {
@@ -64,6 +87,7 @@
       if (!raw) return defaultState();
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object") return defaultState();
+
       if (!parsed.settings || typeof parsed.settings !== "object") {
         parsed.settings = { newPerDay: 20, reviewMode: "en2zh", filterTopic: "", filterPos: "" };
       } else {
@@ -72,10 +96,11 @@
         if (typeof parsed.settings.filterTopic !== "string") parsed.settings.filterTopic = "";
         if (typeof parsed.settings.filterPos !== "string") parsed.settings.filterPos = "";
       }
+
       if (!parsed.decks || Object.keys(parsed.decks).length === 0) {
-        const st = defaultState();
-        return st;
+        return defaultState();
       }
+
       return parsed;
     } catch (e) {
       return defaultState();
@@ -101,12 +126,7 @@
     return (card.dueAt || 0) <= atMs;
   }
 
-  function countDue(deckId, atMs) {
-    return getDeckCards(deckId).filter((c) => isDue(c, atMs)).length;
-  }
-
-  // SM-2 inspired scheduling (Anki-like)
-  // grade: 0 (忘了), 3 (模糊), 5 (记得)
+  // SM-2 inspired scheduling
   function applyGrade(card, grade, atMs) {
     const g = clamp(Number(grade), 0, 5);
 
@@ -141,25 +161,6 @@
 
   function ensureDayLog(dk) {
     if (!state.logsByDay[dk]) {
-      state.logsByDay[dk] = { total: 0, correct: 0, new: 0, byDeck: {} };
-    }
-    const day = state.logsByDay[dk];
-    if (typeof day.new !== "number") day.new = 0;
-    if (!day.byDeck || typeof day.byDeck !== "object") day.byDeck = {};
-    return day;
-  }
-
-  function ensureDeckDayLog(day, deckId) {
-    if (!day.byDeck[deckId]) {
-      day.byDeck[deckId] = { total: 0, correct: 0, new: 0 };
-    }
-    const bd = day.byDeck[deckId];
-    if (typeof bd.new !== "number") bd.new = 0;
-    return bd;
-  }
-
-  function ensureDayLog(dk) {
-    if (!state.logsByDay[dk]) {
       state.logsByDay[dk] = { total: 0, correct: 0, new: 0, byDeck: {}, events: [] };
     }
     const day = state.logsByDay[dk];
@@ -185,6 +186,7 @@
 
     const g = Number(grade);
     const correct = g >= 3;
+
     const ev = {
       t: atMs,
       deckId,
@@ -214,15 +216,6 @@
     state.logsByDay[dk] = day;
   }
 
-  function escapeHtml(s) {
-    return String(s)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-  }
-
   function parseImportText(text) {
     const lines = String(text || "")
       .split(/\r?\n/)
@@ -240,10 +233,6 @@
       const front = (parts[0] || "").trim();
       const back = (parts[1] || "").trim();
 
-      // 兼容：
-      // 3列：word, meaning, example
-      // 6列：word, meaning, example, pos, topic, syn
-      // 7列：word, meaning, example, pos, topic, syn, collocation
       const example = (parts[2] || "").trim();
       const pos = (parts[3] || "").trim();
       const topic = (parts[4] || "").trim();
@@ -297,7 +286,7 @@
     const html = decks
       .map((d) => {
         const total = getDeckCards(d.id).length;
-        const due = countDue(d.id, at);
+        const due = getDeckCards(d.id).filter((c) => isDue(c, at)).length;
         const isSel = d.id === state.selectedDeckId;
 
         return `
@@ -454,20 +443,11 @@
     currentCardId: null,
     currentKind: "review", // "review" | "new"
     shown: false,
-    // filters/mode are from state.settings
+    sessionMode: null, // "new" | "review" | "reinforce" | null
   };
 
   function isNewCard(card) {
     return !card.lastReviewedAt;
-  }
-
-  function countNewToday(deckId) {
-    const dk = dateKeyFromMs(nowMs());
-    const day = state.logsByDay[dk];
-    if (!day) return 0;
-    if (deckId === "__all__") return Number(day.new || 0);
-    const bd = day.byDeck && day.byDeck[deckId];
-    return (bd && Number(bd.new || 0)) || 0;
   }
 
   function normalizeTag(s) {
@@ -489,7 +469,6 @@
     if (fp) {
       const cp = normalizeTag(card.pos);
       if (!cp) return false;
-      // 允许输入 "adj" 也能匹配 "adj." 等
       if (!cp.startsWith(fp)) return false;
     }
 
@@ -498,47 +477,55 @@
 
   function buildReviewQueue(deckId) {
     const at = nowMs();
-    const dueCards = getDeckCards(deckId)
+    return getDeckCards(deckId)
       .filter((c) => isDue(c, at) && !isNewCard(c) && cardMatchesFilters(c))
-      .sort((a, b) => (a.dueAt || 0) - (b.dueAt || 0));
-    return dueCards.map((c) => c.id);
+      .sort((a, b) => (a.dueAt || 0) - (b.dueAt || 0))
+      .map((c) => c.id);
+  }
+
+  function getReinforceQueue(deckId) {
+    const at = nowMs();
+    return getDeckCards(deckId)
+      .filter((c) => !isNewCard(c) && !isDue(c, at) && cardMatchesFilters(c))
+      .sort((a, b) => (a.dueAt || 0) - (b.dueAt || 0))
+      .map((c) => c.id);
+  }
+
+  function countNewToday(deckId) {
+    const dk = dateKeyFromMs(nowMs());
+    const day = state.logsByDay[dk];
+    if (!day) return 0;
+    const bd = day.byDeck && day.byDeck[deckId];
+    return (bd && Number(bd.new || 0)) || 0;
   }
 
   function buildNewQueue(deckId, limit) {
     const remaining = Math.max(0, Number(limit || 0) - countNewToday(deckId));
     if (remaining <= 0) return [];
 
-    // new cards: never reviewed
-    const newCards = getDeckCards(deckId)
+    return getDeckCards(deckId)
       .filter((c) => isNewCard(c) && cardMatchesFilters(c))
       .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(0, remaining);
-
-    return newCards.map((c) => c.id);
+      .slice(0, remaining)
+      .map((c) => c.id);
   }
 
-  function buildSessionQueue(deckId) {
+  function getNewPlanned(deckId) {
     const newLimit = Number(state.settings && state.settings.newPerDay) || 0;
-    const reviewQ = buildReviewQueue(deckId);
-    const newQ = buildNewQueue(deckId, newLimit);
-    // review first, then new
-    return { reviewQ, newQ, queue: reviewQ.concat(newQ) };
+    return buildNewQueue(deckId, newLimit);
   }
 
   function renderReviewSummary() {
     const deckId = $("#review-deck-select").val() || state.selectedDeckId;
-    if (!deckId || !state.decks[deckId]) {
-      $("#review-summary").html("<div class=\"text-sm text-slate-500\">请先创建牌组</div>");
-      return;
-    }
+    if (!deckId || !state.decks[deckId]) return;
 
     const at = nowMs();
     const total = getDeckCards(deckId).length;
     const dueReview = buildReviewQueue(deckId).length;
     const newLimit = Number(state.settings && state.settings.newPerDay) || 0;
     const newToday = countNewToday(deckId);
-    const newRemaining = Math.max(0, newLimit - newToday);
     const newAvailable = getDeckCards(deckId).filter((c) => isNewCard(c)).length;
+    const newRemaining = Math.max(0, newLimit - newToday);
     const newPlanned = Math.min(newRemaining, newAvailable);
 
     $("#review-summary").html(
@@ -548,9 +535,12 @@
         `<span class="badge">到期复习：${dueReview}</span>`,
         `<span class="badge">今日新增：${newToday}/${newLimit}</span>`,
         `<span class="badge">待学新卡：${newAvailable}</span>`,
-        `<span class="badge">本次将学：${newPlanned}</span>`,
       ].join(" ")
     );
+
+    $("#new-count").text(newPlanned);
+    $("#review-count").text(dueReview);
+    $("#reinforce-count").text(getReinforceQueue(deckId).length);
 
     if (!reviewSession.deckId || reviewSession.deckId !== deckId) {
       resetReviewSession(deckId);
@@ -559,13 +549,15 @@
 
   function resetReviewSession(deckId) {
     reviewSession.deckId = deckId;
-    const q = buildSessionQueue(deckId);
-    reviewSession.queue = q.queue;
+    reviewSession.queue = [];
     reviewSession.index = 0;
     reviewSession.currentCardId = null;
     reviewSession.currentKind = "review";
     reviewSession.shown = false;
-    showNextCard();
+    reviewSession.sessionMode = null;
+
+    $("#review-card-area").addClass("hidden");
+    $("#session-choice").removeClass("hidden");
   }
 
   function showCard(cardId) {
@@ -581,36 +573,8 @@
     $("#spell-feedback").text("").removeClass("text-red-600 text-green-700");
     $("#spell-input").val("");
 
-    if (mode === "zh2en") {
-      // prompt: 中文释义；answer: 英文单词
-      $("#card-front").text(card.back);
-      $("#card-back").addClass("hidden").text("");
-      $("#btn-show").prop("disabled", true);
-      $("#grade-area").addClass("hidden");
-      $("#spell-area").removeClass("hidden");
-    } else {
-      // en2zh
-      $("#card-front").text(card.front);
-      $("#card-back").addClass("hidden").text(card.back);
-      $("#btn-show").prop("disabled", false);
-      $("#grade-area").removeClass("hidden");
-      $("#spell-area").addClass("hidden");
-      $(".grade-btn").prop("disabled", true);
-    }
-
-    if (card.example) {
-      $("#card-example").removeClass("hidden").text(card.example);
-    } else {
-      $("#card-example").addClass("hidden").text("");
-    }
-
-    // 加大卡片正文信息的字号与间距
-    $("#card-front").addClass("card-front-big");
-    $("#card-back").addClass("card-back-big");
-    $("#card-example").addClass("card-example-big");
-
+    // meta always rendered
     const kindLabel = reviewSession.currentKind === "new" ? "新增" : "复习";
-
     const ef = Number(card.ef || 2.5).toFixed(2);
     const reps = String(card.reps || 0);
     const interval = String(card.intervalDays || 0) + "天";
@@ -632,117 +596,53 @@
         : "",
     ].join("");
 
-    $("#card-meta").html(`<div class="meta-panel">${metaRows}</div>`);
+    $("#card-meta").removeClass("hidden").html(`<div class=\"meta-panel\">${metaRows}</div>`);
 
-    // 进度显示已移除（避免误导且节省空间）
+    if (mode === "zh2en") {
+      // prompt: 中文释义；answer: 英文单词
+      $("#card-front").text(card.back);
+      $("#card-back").addClass("hidden").text(card.back);
+      $("#grade-area").addClass("hidden");
+      $("#spell-area").removeClass("hidden");
+      $("#btn-show").prop("disabled", true);
+    } else {
+      // en2zh: show all except translation
+      $("#card-front").text(card.front);
+      $("#card-back").addClass("hidden").text(card.back);
+      $("#grade-area").removeClass("hidden");
+      $("#spell-area").addClass("hidden");
+      $(".grade-btn").prop("disabled", false);
+      $("#btn-show").prop("disabled", false);
+
+      if (card.example) {
+        $("#card-example").removeClass("hidden").text(card.example);
+      } else {
+        $("#card-example").addClass("hidden").text("");
+      }
+
+      setTimeout(() => pronounceText(card.front), 150);
+    }
+
+    $("#card-front").addClass("card-front-big");
+    $("#card-back").addClass("card-back-big");
+    $("#card-example").addClass("card-example-big");
   }
 
   function showNextCard() {
-    const total = reviewSession.queue.length;
-    if (total === 0) {
-      reviewSession.currentCardId = null;
-      $("#card-front").text("暂无到期卡片");
-      $("#card-back").addClass("hidden").text("");
-      $("#card-example").addClass("hidden").text("");
-      $("#btn-show").prop("disabled", true);
-      $(".grade-btn").prop("disabled", true);
-      $("#card-meta").text("");
+    if (!reviewSession.queue.length) {
+      if (reviewSession.sessionMode) {
+        toast("本轮学习结束！");
+        $("#review-card-area").addClass("hidden");
+        $("#session-choice").removeClass("hidden");
+        reviewSession.sessionMode = null;
+        renderReviewSummary();
+      }
       return;
     }
 
+    const total = reviewSession.queue.length;
     const nextId = reviewSession.queue[reviewSession.index % total];
     showCard(nextId);
-  }
-
-  function gradeCurrent(grade) {
-    const cardId = reviewSession.currentCardId;
-    const card = state.cards[cardId];
-    if (!card) return;
-
-    const at = nowMs();
-    applyGrade(card, grade, at);
-    const mode = (state.settings && state.settings.reviewMode) || "en2zh";
-    logReview(card.deckId, card.id, grade, at, reviewSession.currentKind, mode);
-
-    saveState();
-
-    // remove from current due queue (it is no longer due)
-    reviewSession.queue = reviewSession.queue.filter((id) => id !== cardId);
-
-    renderDeckList();
-    renderReviewSummary();
-    renderStats();
-
-    toast("已记录");
-
-    // keep index as is; show next
-    showNextCard();
-  }
-
-  function buildTemplateText() {
-    return [
-      "apple\t苹果\tI eat an apple every day.",
-      "banana\t香蕉",
-      "abandon,放弃,He abandoned the plan.",
-    ].join("\n");
-  }
-
-  function downloadText(filename, text) {
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  function exportJson() {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `vocab-backup-${dateKeyFromMs(nowMs())}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  function getStatsForDeck(deckId) {
-    const at = nowMs();
-    const totalCards = getDeckCards(deckId).length;
-
-    const dueReview = buildReviewQueue(deckId).length;
-    const newAvailable = getDeckCards(deckId).filter((c) => isNewCard(c)).length;
-
-    const todayKey = dateKeyFromMs(at);
-    const today = state.logsByDay[todayKey];
-
-    let todayTotal = 0;
-    let todayCorrect = 0;
-    let todayNew = 0;
-
-    if (today) {
-      if (deckId === "__all__") {
-        todayTotal = today.total;
-        todayCorrect = today.correct;
-        todayNew = Number(today.new || 0);
-      } else {
-        const bd = today.byDeck && today.byDeck[deckId];
-        if (bd) {
-          todayTotal = bd.total;
-          todayCorrect = bd.correct;
-          todayNew = Number(bd.new || 0);
-        }
-      }
-    }
-
-    const acc = todayTotal ? Math.round((todayCorrect / todayTotal) * 100) : 0;
-
-    return { totalCards, dueReview, newAvailable, todayTotal, todayNew, acc };
   }
 
   function buildTrend(deckId, days) {
@@ -753,8 +653,14 @@
       const day = state.logsByDay[dk];
       let total = 0;
       if (day) {
-        if (deckId === "__all__") total = day.total;
-        else total = (day.byDeck && day.byDeck[deckId] && day.byDeck[deckId].total) || 0;
+        if (deckId === "__all__") {
+          total = day.total;
+        } else {
+          const bd = day.byDeck && day.byDeck[deckId];
+          if (bd) {
+            total = bd.total;
+          }
+        }
       }
       arr.push({ dk, total });
     }
@@ -768,9 +674,7 @@
         const h = Math.round((t.total / max) * 60);
         return `
           <div class="flex flex-col items-center justify-end" style="width: 10px;">
-            <div title="${escapeHtml(t.dk)}：${t.total}" style="height:${h}px; width:10px; background: rgb(15 23 42); border-radius:4px; opacity:${
-          t.total ? 0.9 : 0.15
-        }"></div>
+            <div title="${escapeHtml(t.dk)}：${t.total}" style="height:${h}px; width:10px; background: rgb(15 23 42); border-radius:4px; opacity:${t.total ? 0.9 : 0.15}"></div>
           </div>
         `;
       })
@@ -779,6 +683,34 @@
     $("#sparkline").html(
       `<div class="flex items-end gap-1" style="height:70px;">${bars}</div><div class="mt-2 text-xs text-slate-500">柱高=当天复习次数</div>`
     );
+  }
+
+  function computeAccByTag(deckId, tagField) {
+    const acc = {};
+    const cardById = state.cards || {};
+
+    Object.keys(state.logsByDay).forEach((dk) => {
+      const day = ensureDayLog(dk);
+      const events = day.events || [];
+      events.forEach((ev) => {
+        if (!ev || ev.deckId !== deckId) return;
+
+        const c = cardById[ev.cardId];
+        if (!c) return;
+
+        const key = normalizeTag(c[tagField]) || "(未标注)";
+        if (!acc[key]) acc[key] = { key, total: 0, correct: 0 };
+        acc[key].total += 1;
+        if (ev.correct) acc[key].correct += 1;
+      });
+    });
+
+    return Object.values(acc).sort((a, b) => {
+      const aAcc = a.total ? a.correct / a.total : 0;
+      const bAcc = b.total ? b.correct / b.total : 0;
+      if (aAcc !== bAcc) return aAcc - bAcc; // Low accuracy first
+      return b.total - a.total;
+    });
   }
 
   function renderTagAccTable(containerId, items) {
@@ -797,38 +729,59 @@
     $(containerId).html(rows || `<div class="px-3 py-3 text-sm text-slate-500">暂无数据</div>`);
   }
 
-  function computeAccByTag(deckId, tagField, modeFilter) {
-    const acc = {};
-    const cardById = state.cards || {};
+  function gradeCurrent(grade) {
+    const cardId = reviewSession.currentCardId;
+    const card = state.cards[cardId];
+    if (!card) return;
 
-    Object.keys(state.logsByDay).forEach((dk) => {
-      const day = ensureDayLog(dk);
-      const events = day.events || [];
-      events.forEach((ev) => {
-        if (!ev || ev.deckId !== deckId) return;
-        if (modeFilter && ev.mode !== modeFilter) return;
+    const at = nowMs();
+    applyGrade(card, grade, at);
 
-        const c = cardById[ev.cardId];
-        if (!c) return;
+    const mode = (state.settings && state.settings.reviewMode) || "en2zh";
+    logReview(card.deckId, card.id, grade, at, reviewSession.currentKind, mode);
 
-        const key = normalizeTag(c[tagField]) || "(未标注)";
-        if (!acc[key]) acc[key] = { key, total: 0, correct: 0 };
-        acc[key].total += 1;
-        if (ev.correct) acc[key].correct += 1;
-      });
-    });
+    saveState();
 
-    const arr = Object.values(acc).sort((a, b) => {
-      const aAcc = a.total ? a.correct / a.total : 0;
-      const bAcc = b.total ? b.correct / b.total : 0;
-      if (aAcc !== bAcc) return aAcc - bAcc; // 正确率低的排前面=薄弱项
-      return b.total - a.total;
-    });
-    return arr;
+    reviewSession.queue = reviewSession.queue.filter((id) => id !== cardId);
+
+    renderDeckList();
+    renderReviewSummary();
+    renderStats();
+
+    toast("已记录");
+    showNextCard();
+  }
+
+  // ==== Stats (unchanged) ====
+  function getStatsForDeck(deckId) {
+    const at = nowMs();
+    const totalCards = getDeckCards(deckId).length;
+
+    const dueReview = buildReviewQueue(deckId).length;
+    const newAvailable = getDeckCards(deckId).filter((c) => isNewCard(c)).length;
+
+    const todayKey = dateKeyFromMs(at);
+    const today = state.logsByDay[todayKey];
+
+    let todayTotal = 0;
+    let todayCorrect = 0;
+    let todayNew = 0;
+
+    if (today) {
+      const bd = today.byDeck && today.byDeck[deckId];
+      if (bd) {
+        todayTotal = bd.total;
+        todayCorrect = bd.correct;
+        todayNew = Number(bd.new || 0);
+      }
+    }
+
+    const acc = todayTotal ? Math.round((todayCorrect / todayTotal) * 100) : 0;
+    return { totalCards, dueReview, newAvailable, todayTotal, todayNew, acc };
   }
 
   function renderStats() {
-    let deckId = $("#stats-deck-select").val() || state.selectedDeckId;
+    const deckId = $("#stats-deck-select").val() || state.selectedDeckId;
     if (!deckId || !state.decks[deckId]) return;
 
     const s = getStatsForDeck(deckId);
@@ -840,11 +793,141 @@
     const trend = buildTrend(deckId, 14);
     renderSparkline(trend);
 
-    const modeFilter = null;
-    const topicDist = computeAccByTag(deckId, "topic", modeFilter);
-    const posDist = computeAccByTag(deckId, "pos", modeFilter);
+    const topicDist = computeAccByTag(deckId, "topic");
+    const posDist = computeAccByTag(deckId, "pos");
     renderTagAccTable("#stats-topic", topicDist);
     renderTagAccTable("#stats-pos", posDist);
+  }
+
+  // ==== AI drawer (unchanged core) ====
+  const AI_KEY_STORAGE = "deepseek_api_key";
+  const AI_CHAT_STORAGE = "deepseek_chat_v1";
+  const AI_MAX_TURNS = 10;
+
+  function loadAiKey() {
+    return localStorage.getItem(AI_KEY_STORAGE) || "";
+  }
+
+  function saveAiKey(key) {
+    localStorage.setItem(AI_KEY_STORAGE, key);
+  }
+
+  function loadAiChat() {
+    try {
+      const raw = localStorage.getItem(AI_CHAT_STORAGE);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveAiChat(messages) {
+    localStorage.setItem(AI_CHAT_STORAGE, JSON.stringify(messages));
+  }
+
+  function clampAiChat(messages) {
+    const max = AI_MAX_TURNS * 2;
+    if (messages.length <= max) return messages;
+    return messages.slice(messages.length - max);
+  }
+
+  function openAiDrawer() {
+    $("body").addClass("ai-drawer-open");
+  }
+
+  function closeAiDrawer() {
+    $("body").removeClass("ai-drawer-open");
+  }
+
+  function renderAiMessages() {
+    const msgs = loadAiChat();
+    const html = msgs
+      .map((m) => {
+        const cls = m.role === "user" ? "user" : "assistant";
+        let contentHtml;
+        if (m.role === "user") {
+          contentHtml = escapeHtml(m.content);
+        } else {
+          if (m._loading) {
+            contentHtml = escapeHtml(m.content);
+          } else if (m._error) {
+            contentHtml = `<p class=\"text-red-700\">${escapeHtml(m.content)}</p>`;
+          } else {
+            contentHtml = DOMPurify.sanitize(marked.parse(m.content));
+          }
+        }
+
+        let extraClasses = "";
+        if (m._loading) extraClasses += " loading";
+        if (m._error) extraClasses += " error";
+
+        return `<div class=\"ai-message ${cls} ${extraClasses}\">${contentHtml}</div>`;
+      })
+      .join("");
+
+    const initialMessageHtml = DOMPurify.sanitize(
+      marked.parse("你可以问：这个词在 TPO 阅读里怎么理解？例句在说什么？给我同义替换/拆句。")
+    );
+
+    $("#ai-chat-messages").html(html || `<div class=\"ai-message assistant\">${initialMessageHtml}</div>`);
+    const container = $("#ai-chat-messages").parent();
+    container.scrollTop(container[0].scrollHeight);
+  }
+
+  async function callDeepseek(messages, apiKey) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 30000);
+
+    try {
+      const resp = await fetch("https://api.deepseek.com/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages,
+          temperature: 0.3,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${txt}`);
+      }
+
+      const data = await resp.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) throw new Error("返回内容为空");
+      return String(content);
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  function buildCardContextPrompt() {
+    const card = state.cards[reviewSession.currentCardId];
+    if (!card) return "";
+
+    const parts = [
+      `当前单词：${card.front}`,
+      `中文释义：${card.back}`,
+      card.example ? `例句：${card.example}` : "",
+      card.pos ? `词性：${card.pos}` : "",
+      card.topic ? `主题：${card.topic}` : "",
+      card.syn ? `同义词：${card.syn}` : "",
+      card.collocation ? `搭配：${card.collocation}` : "",
+    ].filter(Boolean);
+
+    return (
+      "请作为托福TPO阅读词汇助教，帮助我理解该词在学术语境中的含义，并解释例句。\n" +
+      parts.join("\n") +
+      "\n\n我接下来会继续追问，请保持上下文连续。"
+    );
   }
 
   function initEvents() {
@@ -859,126 +942,81 @@
       }
     });
 
-    $("#btn-create-deck").on("click", function () {
-      const name = $("#new-deck-name").val().trim();
-      if (!name) {
-        toast("请输入牌组名称");
+    // session buttons
+    function startReviewSession(mode) {
+      const deckId = $("#review-deck-select").val() || state.selectedDeckId;
+      if (!deckId || !state.decks[deckId]) {
+        toast("请先选择牌组");
         return;
       }
-      const id = uid("deck");
-      const at = nowMs();
-      state.decks[id] = { id, name, createdAt: at, updatedAt: at };
-      state.selectedDeckId = id;
-      $("#new-deck-name").val("");
-      saveState();
-      renderDeckSelects();
-      renderDeckList();
-      renderReviewSummary();
-      renderStats();
-      toast("已创建");
+
+      if (mode === "new") {
+        reviewSession.sessionMode = "new";
+        reviewSession.queue = getNewPlanned(deckId);
+      } else if (mode === "review") {
+        reviewSession.sessionMode = "review";
+        reviewSession.queue = buildReviewQueue(deckId);
+      } else if (mode === "reinforce") {
+        reviewSession.sessionMode = "reinforce";
+        reviewSession.queue = getReinforceQueue(deckId);
+      }
+
+      reviewSession.index = 0;
+      reviewSession.currentCardId = null;
+      reviewSession.shown = false;
+
+      $("#session-choice").addClass("hidden");
+      $("#review-card-area").removeClass("hidden");
+
+      showNextCard();
+    }
+
+    $("#btn-start-new").on("click", () => startReviewSession("new"));
+    $("#btn-start-review").on("click", () => startReviewSession("review"));
+    $("#btn-start-reinforce").on("click", () => startReviewSession("reinforce"));
+
+    $("#btn-show").on("click", function () {
+      const mode = (state.settings && state.settings.reviewMode) || "en2zh";
+      if (mode !== "en2zh") return;
+      if (!reviewSession.currentCardId) return;
+      $("#card-back").removeClass("hidden");
+      $(this).prop("disabled", true);
     });
 
-    $(document).on("click", ".btn-select-deck", function () {
-      const id = $(this).data("id");
-      setSelectedDeck(id);
+    $("#btn-pronounce-en2zh").on("click", function () {
+      const card = state.cards[reviewSession.currentCardId];
+      if (!card) return;
+      pronounceText(card.front);
     });
 
-    $(document).on("click", ".btn-rename-deck", function () {
-      const id = $(this).data("id");
-      const d = state.decks[id];
-      if (!d) return;
-      const name = prompt("新名称：", d.name);
-      if (!name) return;
-      d.name = name.trim();
-      d.updatedAt = nowMs();
-      state.decks[id] = d;
-      saveState();
-      renderDeckSelects();
-      renderDeckList();
-      renderReviewSummary();
-      renderStats();
-      toast("已重命名");
+    $("#btn-pronounce").on("click", function () {
+      const card = state.cards[reviewSession.currentCardId];
+      if (!card) return;
+      pronounceText(card.front);
     });
 
-    $(document).on("click", ".btn-delete-deck", function () {
-      const id = $(this).data("id");
-      if (!state.decks[id]) return;
-      if (!confirm("确定删除该牌组？（卡片也会一起删除）")) return;
-
-      // delete cards
-      Object.keys(state.cards).forEach((cid) => {
-        if (state.cards[cid].deckId === id) delete state.cards[cid];
-      });
-
-      delete state.decks[id];
-      ensureSelectedDeck();
-
-      saveState();
-      renderDeckSelects();
-      renderDeckList();
-      renderReviewSummary();
-      renderStats();
-      toast("已删除");
-    });
-
-    $("#import-deck-select").on("change", function () {
-      const id = $(this).val();
-      if (id) setSelectedDeck(id);
-    });
-
+    // import
     let importParsed = { items: [], errors: [] };
-
     $("#btn-parse-import").on("click", function () {
       importParsed = parseImportText($("#import-text").val());
-
       const deckId = $("#import-deck-select").val() || state.selectedDeckId;
       const frontIndex = deckId ? buildDeckFrontIndex(deckId) : {};
       const dupCount = importParsed.items.reduce((acc, it) => {
         const key = String(it.front || "").trim().toLowerCase();
         return acc + (key && frontIndex[key] ? 1 : 0);
       }, 0);
-
       renderImportPreview(importParsed.items, importParsed.errors, { duplicates: dupCount });
-
-      $("#import-hint").text(
-        importParsed.errors.length
-          ? `有 ${importParsed.errors.length} 行无法解析，已跳过。示例：第 ${importParsed.errors[0].line} 行：${importParsed.errors[0].raw}`
-          : dupCount
-            ? `检测到 ${dupCount} 条重复单词，可在右侧选择“跳过重复/覆盖旧卡”。`
-            : ""
-      );
-
       $("#btn-commit-import").prop("disabled", importParsed.items.length === 0);
-    });
-
-    $("#btn-clear-import").on("click", function () {
-      $("#import-text").val("");
-      $("#import-preview").html("<div class=\"px-3 py-3 text-sm text-slate-500\">暂无预览</div>");
-      $("#import-preview-count").text("");
-      $("#import-hint").text("");
-      $("#btn-commit-import").prop("disabled", true);
-      importParsed = { items: [], errors: [] };
     });
 
     $("#btn-commit-import").on("click", function () {
       const deckId = $("#import-deck-select").val() || state.selectedDeckId;
-      if (!deckId || !state.decks[deckId]) {
-        toast("请先选择牌组");
-        return;
-      }
-      if (!importParsed.items.length) {
-        toast("没有可导入内容");
-        return;
-      }
+      if (!deckId || !state.decks[deckId]) return;
       const dupMode = $("#import-dup-mode").val();
       commitImport(importParsed.items, deckId, dupMode);
-      $("#btn-clear-import").trigger("click");
     });
 
-    $("#btn-download-template").on("click", function () {
-      downloadText("vocab-template.txt", buildTemplateText());
-    });
-
+    // deck changes
     $("#review-deck-select").on("change", function () {
       const id = $(this).val();
       if (id) {
@@ -987,114 +1025,7 @@
       }
     });
 
-    $("#new-per-day").on("change", function () {
-      const v = Math.max(0, Math.floor(Number($(this).val() || 0)));
-      state.settings.newPerDay = v;
-      saveState();
-      renderReviewSummary();
-      resetReviewSession(state.selectedDeckId);
-      renderStats();
-      toast("已更新每日新增上限");
-    });
-
-    $("#review-mode").on("change", function () {
-      const v = $(this).val();
-      state.settings.reviewMode = v === "zh2en" ? "zh2en" : "en2zh";
-      saveState();
-      resetReviewSession(state.selectedDeckId);
-      toast("已切换复习模式");
-    });
-
-    $("#btn-apply-filter").on("click", function () {
-      state.settings.filterTopic = $("#filter-topic").val() || "";
-      state.settings.filterPos = $("#filter-pos").val() || "";
-      saveState();
-      resetReviewSession(state.selectedDeckId);
-      renderReviewSummary();
-      toast("已应用筛选");
-    });
-
-    $("#btn-show").on("click", function () {
-      if (!reviewSession.currentCardId) return;
-      reviewSession.shown = true;
-      $("#card-back").removeClass("hidden");
-      $(".grade-btn").prop("disabled", false);
-      $(this).prop("disabled", true);
-    });
-
-    function normalizeAnswer(s) {
-      return String(s || "")
-        .trim()
-        .toLowerCase()
-        .replaceAll(/\s+/g, " ");
-    }
-
-    function pronounceWord(word) {
-      const w = String(word || "").trim();
-      if (!w) return;
-      if (!("speechSynthesis" in window)) {
-        toast("当前浏览器不支持发音");
-        return;
-      }
-      const u = new SpeechSynthesisUtterance(w);
-      u.lang = "en-US";
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(u);
-    }
-
-    function revealSpell() {
-      const card = state.cards[reviewSession.currentCardId];
-      if (!card) return;
-      $("#spell-feedback")
-        .removeClass("text-green-700")
-        .addClass("text-slate-600")
-        .text(`答案：${card.front}`);
-    }
-
-    function submitSpell() {
-      const card = state.cards[reviewSession.currentCardId];
-      if (!card) return;
-
-      const input = normalizeAnswer($("#spell-input").val());
-      const ans = normalizeAnswer(card.front);
-
-      if (!input) {
-        toast("请输入拼写");
-        return;
-      }
-
-      const correct = input === ans;
-
-      $("#spell-feedback")
-        .removeClass("text-red-600 text-green-700")
-        .addClass(correct ? "text-green-700" : "text-red-600")
-        .text(correct ? "正确" : `不正确，答案：${card.front}`);
-
-      // 拼写模式：正确=5，不正确=0
-      gradeCurrent(correct ? 5 : 0);
-    }
-
-    $("#btn-check-spell").on("click", function () {
-      submitSpell();
-    });
-
-    $("#spell-input").on("keydown", function (e) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        submitSpell();
-      }
-    });
-
-    $("#btn-reveal-spell").on("click", function () {
-      revealSpell();
-    });
-
-    $("#btn-pronounce").on("click", function () {
-      const card = state.cards[reviewSession.currentCardId];
-      if (!card) return;
-      pronounceWord(card.front);
-    });
-
+    // grading
     $(".grade-btn").on("click", function () {
       const grade = $(this).data("grade");
       gradeCurrent(grade);
@@ -1106,50 +1037,70 @@
       showNextCard();
     });
 
-    $("#stats-deck-select").on("change", function () {
-      const id = $(this).val();
-      if (id) {
-        setSelectedDeck(id);
-        renderStats();
+    $("#btn-back-to-choice").on("click", function () {
+      // 终止当前会话并返回选择面板
+      reviewSession.queue = [];
+      reviewSession.index = 0;
+      reviewSession.currentCardId = null;
+      reviewSession.sessionMode = null;
+
+      $("#review-card-area").addClass("hidden");
+      $("#session-choice").removeClass("hidden");
+      renderReviewSummary();
+      toast("已返回选择界面");
+    });
+
+    // AI drawer init minimal
+    $("#ai-api-key").val(loadAiKey());
+    renderAiMessages();
+    $("#btn-toggle-ai").on("click", function () {
+      openAiDrawer();
+      renderAiMessages();
+    });
+    $("#btn-close-ai").on("click", closeAiDrawer);
+    $("#btn-save-key").on("click", function () {
+      const key = String($("#ai-api-key").val() || "").trim();
+      if (!key) return;
+      saveAiKey(key);
+      toast("已保存 API Key（仅本机）");
+    });
+    $("#btn-ai-clear").on("click", function () {
+      saveAiChat([]);
+      renderAiMessages();
+    });
+    $("#btn-ai-inject").on("click", function () {
+      const prompt = buildCardContextPrompt();
+      if (!prompt) return;
+      $("#ai-input").val(prompt);
+    });
+    $("#btn-ai-send").on("click", async function () {
+      const apiKey = String($("#ai-api-key").val() || loadAiKey()).trim();
+      const text = String($("#ai-input").val() || "").trim();
+      if (!apiKey || !text) return;
+      $("#ai-input").val("");
+
+      let msgs = loadAiChat();
+      msgs.push({ role: "user", content: text });
+      msgs = clampAiChat(msgs);
+      saveAiChat(msgs);
+      renderAiMessages();
+
+      try {
+        const system = {
+          role: "system",
+          content:
+            "你是托福TPO阅读词汇助教。用中文解释词义与例句，必要时拆句；给出1-2个更自然的同义替换；避免废话。",
+        };
+        const sendMsgs = [system].concat(clampAiChat(loadAiChat()));
+        const answer = await callDeepseek(sendMsgs, apiKey);
+        msgs = loadAiChat();
+        msgs.push({ role: "assistant", content: answer });
+        msgs = clampAiChat(msgs);
+        saveAiChat(msgs);
+        renderAiMessages();
+      } catch (e) {
+        toast("AI 请求失败");
       }
-    });
-
-    $("#btn-export").on("click", function () {
-      exportJson();
-    });
-
-    $("#backup-file").on("change", function (e) {
-      const file = e.target.files && e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = function () {
-        try {
-          const parsed = JSON.parse(String(reader.result || ""));
-          if (!parsed || typeof parsed !== "object" || !parsed.decks || !parsed.cards) {
-            toast("备份文件格式不正确");
-            return;
-          }
-          state = parsed;
-          ensureSelectedDeck();
-          saveState();
-          renderAll();
-          toast("已导入备份");
-        } catch (err) {
-          toast("导入失败");
-        } finally {
-          $("#backup-file").val("");
-        }
-      };
-      reader.readAsText(file);
-    });
-
-    $("#btn-reset").on("click", function () {
-      if (!confirm("确定清空全部数据？该操作不可撤销。")) return;
-      localStorage.removeItem(STORAGE_KEY);
-      state = defaultState();
-      saveState();
-      renderAll();
-      toast("已清空");
     });
   }
 
@@ -1178,4 +1129,3 @@
     renderNav("decks");
   });
 })();
-
