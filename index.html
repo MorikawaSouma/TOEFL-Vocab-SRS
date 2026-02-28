@@ -127,6 +127,16 @@
 
             <div class="mt-6">
               <div id="review-summary" class="flex flex-wrap gap-4 text-base text-slate-600"></div>
+              <div id="review-preview" class="mt-4 hidden">
+                <div class="flex items-center justify-between">
+                  <div class="text-sm text-slate-500" id="review-preview-title"></div>
+                  <div class="text-xs text-slate-400">最多显示前 200 张</div>
+                </div>
+                <div
+                  id="review-preview-list"
+                  class="mt-2 max-h-[260px] overflow-auto rounded-xl border border-slate-200 bg-white text-sm"
+                ></div>
+              </div>
 
               <!-- Session Choice -->
               <div id="session-choice" class="mt-6">
@@ -324,4 +334,3 @@
     <script src="app.js"></script>
   </body>
 </html>
-

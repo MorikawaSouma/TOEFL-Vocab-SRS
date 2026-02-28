@@ -2,7 +2,6 @@
 
 (function () {
   const STORAGE_KEY = "vocab_anki_like_v1";
-
   const DAY_MS = 24 * 60 * 60 * 1000;
 
   function nowMs() {
@@ -43,7 +42,7 @@
       .replaceAll("'", "&#39;");
   }
 
-  // TTS (global-scope)
+  // ===== TTS =====
   function pronounceText(text) {
     const t = String(text || "").trim();
     if (!t) return;
@@ -57,6 +56,7 @@
     window.speechSynthesis.speak(u);
   }
 
+  // ===== State =====
   function defaultState() {
     const deckId = uid("deck");
     return {
@@ -80,6 +80,8 @@
       logsByDay: {},
     };
   }
+
+  let state = loadState();
 
   function loadState() {
     try {
@@ -126,7 +128,7 @@
     return (card.dueAt || 0) <= atMs;
   }
 
-  // SM-2 inspired scheduling
+  // ===== Scheduling =====
   function applyGrade(card, grade, atMs) {
     const g = clamp(Number(grade), 0, 5);
 
@@ -159,6 +161,7 @@
     return card;
   }
 
+  // ===== Logs =====
   function ensureDayLog(dk) {
     if (!state.logsByDay[dk]) {
       state.logsByDay[dk] = { total: 0, correct: 0, new: 0, byDeck: {}, events: [] };
@@ -216,6 +219,7 @@
     state.logsByDay[dk] = day;
   }
 
+  // ===== Import / Export =====
   function parseImportText(text) {
     const lines = String(text || "")
       .split(/\r?\n/)
@@ -250,6 +254,33 @@
     return { items, errors };
   }
 
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportJson() {
+    const blob = new Blob([JSON.stringify(state, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vocab-backup-${dateKeyFromMs(nowMs())}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // ===== Decks =====
   function renderNav(activeView) {
     $(".nav-btn").each(function () {
       const $b = $(this);
@@ -301,8 +332,8 @@
               </div>
               <div class="flex flex-col gap-2">
                 <button class="btn ${isSel ? "btn-primary" : ""} btn-select-deck" data-id="${escapeHtml(d.id)}">${
-                  isSel ? "当前" : "选择"
-                }</button>
+          isSel ? "当前" : "选择"
+        }</button>
                 <button class="btn btn-rename-deck" data-id="${escapeHtml(d.id)}">重命名</button>
                 <button class="btn btn-delete-deck" data-id="${escapeHtml(d.id)}">删除</button>
               </div>
@@ -344,8 +375,8 @@
         <div class="flex gap-3 border-b border-slate-100 px-3 py-2">
           <div class="w-1/3 font-semibold">${escapeHtml(it.front)}</div>
           <div class="w-2/3 text-slate-700">${escapeHtml(it.back)}${
-            it.example ? `<div class="mt-1 text-xs text-slate-500">${escapeHtml(it.example)}</div>` : ""
-          }</div>
+          it.example ? `<div class="mt-1 text-xs text-slate-500">${escapeHtml(it.example)}</div>` : ""
+        }</div>
         </div>
       `
       )
@@ -365,9 +396,7 @@
   function commitImport(items, deckId, dupMode) {
     const at = nowMs();
     const mode = dupMode === "overwrite" ? "overwrite" : "skip";
-
     const frontIndex = buildDeckFrontIndex(deckId);
-
     let added = 0;
     let updated = 0;
     let skipped = 0;
@@ -409,10 +438,8 @@
         topic: it.topic || "",
         syn: it.syn || "",
         collocation: it.collocation || "",
-
         createdAt: at,
         updatedAt: at,
-
         ef: 2.5,
         reps: 0,
         intervalDays: 0,
@@ -436,12 +463,13 @@
     toast(parts.length ? `导入完成：${parts.join("，")}` : "导入完成");
   }
 
+  // ===== Review session =====
   const reviewSession = {
     deckId: null,
     queue: [],
     index: 0,
     currentCardId: null,
-    currentKind: "review", // "review" | "new"
+    currentKind: "review",
     shown: false,
     sessionMode: null, // "new" | "review" | "reinforce" | null
   };
@@ -458,8 +486,8 @@
   }
 
   function cardMatchesFilters(card) {
-    const ft = normalizeTag(state.settings && state.settings.filterTopic);
-    const fp = normalizeTag(state.settings && state.settings.filterPos);
+    const ft = normalizeTag(state.settings.filterTopic);
+    const fp = normalizeTag(state.settings.filterPos);
 
     if (ft) {
       const ct = normalizeTag(card.topic);
@@ -511,7 +539,7 @@
   }
 
   function getNewPlanned(deckId) {
-    const newLimit = Number(state.settings && state.settings.newPerDay) || 0;
+    const newLimit = Number(state.settings.newPerDay) || 0;
     return buildNewQueue(deckId, newLimit);
   }
 
@@ -522,7 +550,7 @@
     const at = nowMs();
     const total = getDeckCards(deckId).length;
     const dueReview = buildReviewQueue(deckId).length;
-    const newLimit = Number(state.settings && state.settings.newPerDay) || 0;
+    const newLimit = Number(state.settings.newPerDay) || 0;
     const newToday = countNewToday(deckId);
     const newAvailable = getDeckCards(deckId).filter((c) => isNewCard(c)).length;
     const newRemaining = Math.max(0, newLimit - newToday);
@@ -547,6 +575,75 @@
     }
   }
 
+  function renderSessionPreview(kind) {
+    const deckId = $("#review-deck-select").val() || state.selectedDeckId;
+    if (!deckId || !state.decks[deckId]) {
+      toast("请先选择牌组");
+      return;
+    }
+
+    let ids = [];
+    let title = "";
+
+    if (kind === "review") {
+      ids = buildReviewQueue(deckId);
+      title = "到期复习列表";
+    } else if (kind === "reinforce") {
+      ids = getReinforceQueue(deckId);
+      title = "巩固学习列表";
+    } else {
+      return;
+    }
+
+    const total = ids.length;
+    const limit = 200;
+    const shown = Math.min(total, limit);
+
+    $("#review-preview-title").text(
+      total
+        ? `${title}：共 ${total} 张，当前显示前 ${shown} 张`
+        : `${title}：当前没有卡片`
+    );
+
+    if (!total) {
+      $("#review-preview-list").html(
+        '<div class="px-3 py-3 text-sm text-slate-500">暂无卡片</div>'
+      );
+      $("#review-preview").removeClass("hidden");
+      return;
+    }
+
+    const rows = ids.slice(0, limit)
+      .map((id) => {
+        const c = state.cards[id];
+        if (!c) return "";
+        const front = escapeHtml(c.front || "");
+        const back = escapeHtml(c.back || "");
+        const metaParts = [];
+        if (c.pos) metaParts.push(escapeHtml(c.pos));
+        if (c.topic) metaParts.push(escapeHtml(c.topic));
+        const meta = metaParts.length
+          ? `<span class="ml-2 text-xs text-slate-400">${metaParts.join(" · ")}</span>`
+          : "";
+        const backHtml = back
+          ? `<div class="mt-1 text-sm text-slate-700">${back}</div>`
+          : "";
+        return `
+          <div class="border-b border-slate-100 px-3 py-2">
+            <div class="text-sm font-semibold">${front}${meta}</div>
+            ${backHtml}
+          </div>
+        `;
+      })
+      .filter(Boolean)
+      .join("");
+
+    $("#review-preview-list").html(
+      rows || '<div class="px-3 py-3 text-sm text-slate-500">暂无卡片</div>'
+    );
+    $("#review-preview").removeClass("hidden");
+  }
+
   function resetReviewSession(deckId) {
     reviewSession.deckId = deckId;
     reviewSession.queue = [];
@@ -558,6 +655,7 @@
 
     $("#review-card-area").addClass("hidden");
     $("#session-choice").removeClass("hidden");
+    $("#review-preview").addClass("hidden");
   }
 
   function showCard(cardId) {
@@ -568,12 +666,11 @@
     reviewSession.shown = false;
     reviewSession.currentKind = isNewCard(card) ? "new" : "review";
 
-    const mode = (state.settings && state.settings.reviewMode) || "en2zh";
+    const mode = state.settings.reviewMode || "en2zh";
 
     $("#spell-feedback").text("").removeClass("text-red-600 text-green-700");
     $("#spell-input").val("");
 
-    // meta always rendered
     const kindLabel = reviewSession.currentKind === "new" ? "新增" : "复习";
     const ef = Number(card.ef || 2.5).toFixed(2);
     const reps = String(card.reps || 0);
@@ -599,14 +696,12 @@
     $("#card-meta").removeClass("hidden").html(`<div class=\"meta-panel\">${metaRows}</div>`);
 
     if (mode === "zh2en") {
-      // prompt: 中文释义；answer: 英文单词
       $("#card-front").text(card.back);
       $("#card-back").addClass("hidden").text(card.back);
       $("#grade-area").addClass("hidden");
       $("#spell-area").removeClass("hidden");
       $("#btn-show").prop("disabled", true);
     } else {
-      // en2zh: show all except translation
       $("#card-front").text(card.front);
       $("#card-back").addClass("hidden").text(card.back);
       $("#grade-area").removeClass("hidden");
@@ -645,90 +740,6 @@
     showCard(nextId);
   }
 
-  function buildTrend(deckId, days) {
-    const at = nowMs();
-    const arr = [];
-    for (let i = days - 1; i >= 0; i--) {
-      const dk = dateKeyFromMs(at - i * DAY_MS);
-      const day = state.logsByDay[dk];
-      let total = 0;
-      if (day) {
-        if (deckId === "__all__") {
-          total = day.total;
-        } else {
-          const bd = day.byDeck && day.byDeck[deckId];
-          if (bd) {
-            total = bd.total;
-          }
-        }
-      }
-      arr.push({ dk, total });
-    }
-    return arr;
-  }
-
-  function renderSparkline(trend) {
-    const max = Math.max(1, ...trend.map((t) => t.total));
-    const bars = trend
-      .map((t) => {
-        const h = Math.round((t.total / max) * 60);
-        return `
-          <div class="flex flex-col items-center justify-end" style="width: 10px;">
-            <div title="${escapeHtml(t.dk)}：${t.total}" style="height:${h}px; width:10px; background: rgb(15 23 42); border-radius:4px; opacity:${t.total ? 0.9 : 0.15}"></div>
-          </div>
-        `;
-      })
-      .join("");
-
-    $("#sparkline").html(
-      `<div class="flex items-end gap-1" style="height:70px;">${bars}</div><div class="mt-2 text-xs text-slate-500">柱高=当天复习次数</div>`
-    );
-  }
-
-  function computeAccByTag(deckId, tagField) {
-    const acc = {};
-    const cardById = state.cards || {};
-
-    Object.keys(state.logsByDay).forEach((dk) => {
-      const day = ensureDayLog(dk);
-      const events = day.events || [];
-      events.forEach((ev) => {
-        if (!ev || ev.deckId !== deckId) return;
-
-        const c = cardById[ev.cardId];
-        if (!c) return;
-
-        const key = normalizeTag(c[tagField]) || "(未标注)";
-        if (!acc[key]) acc[key] = { key, total: 0, correct: 0 };
-        acc[key].total += 1;
-        if (ev.correct) acc[key].correct += 1;
-      });
-    });
-
-    return Object.values(acc).sort((a, b) => {
-      const aAcc = a.total ? a.correct / a.total : 0;
-      const bAcc = b.total ? b.correct / b.total : 0;
-      if (aAcc !== bAcc) return aAcc - bAcc; // Low accuracy first
-      return b.total - a.total;
-    });
-  }
-
-  function renderTagAccTable(containerId, items) {
-    const rows = items
-      .slice(0, 30)
-      .map((it) => {
-        const acc = it.total ? Math.round((it.correct / it.total) * 100) : 0;
-        return `
-          <div class="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-            <div class="text-sm font-semibold">${escapeHtml(it.key)}</div>
-            <div class="text-xs text-slate-500">${acc}%（${it.correct}/${it.total}）</div>
-          </div>
-        `;
-      })
-      .join("");
-    $(containerId).html(rows || `<div class="px-3 py-3 text-sm text-slate-500">暂无数据</div>`);
-  }
-
   function gradeCurrent(grade) {
     const cardId = reviewSession.currentCardId;
     const card = state.cards[cardId];
@@ -737,7 +748,7 @@
     const at = nowMs();
     applyGrade(card, grade, at);
 
-    const mode = (state.settings && state.settings.reviewMode) || "en2zh";
+    const mode = state.settings.reviewMode || "en2zh";
     logReview(card.deckId, card.id, grade, at, reviewSession.currentKind, mode);
 
     saveState();
@@ -752,11 +763,10 @@
     showNextCard();
   }
 
-  // ==== Stats (unchanged) ====
+  // ===== Stats =====
   function getStatsForDeck(deckId) {
     const at = nowMs();
     const totalCards = getDeckCards(deckId).length;
-
     const dueReview = buildReviewQueue(deckId).length;
     const newAvailable = getDeckCards(deckId).filter((c) => isNewCard(c)).length;
 
@@ -780,6 +790,84 @@
     return { totalCards, dueReview, newAvailable, todayTotal, todayNew, acc };
   }
 
+  function buildTrend(deckId, days) {
+    const at = nowMs();
+    const arr = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const dk = dateKeyFromMs(at - i * DAY_MS);
+      const day = state.logsByDay[dk];
+      let total = 0;
+      if (day) {
+        const bd = day.byDeck && day.byDeck[deckId];
+        if (bd) total = bd.total;
+      }
+      arr.push({ dk, total });
+    }
+    return arr;
+  }
+
+  function renderSparkline(trend) {
+    const max = Math.max(1, ...trend.map((t) => t.total));
+    const bars = trend
+      .map((t) => {
+        const h = Math.round((t.total / max) * 60);
+        return `
+          <div class="flex flex-col items-center justify-end" style="width: 10px;">
+            <div title="${escapeHtml(t.dk)}：${t.total}" style="height:${h}px; width:10px; background: rgb(15 23 42); border-radius:4px; opacity:${
+          t.total ? 0.9 : 0.15
+        }"></div>
+          </div>
+        `;
+      })
+      .join("");
+
+    $("#sparkline").html(
+      `<div class="flex items-end gap-1" style="height:70px;">${bars}</div><div class="mt-2 text-xs text-slate-500">柱高=当天复习次数</div>`
+    );
+  }
+
+  function computeAccByTag(deckId, tagField) {
+    const acc = {};
+    const cardById = state.cards || {};
+
+    Object.keys(state.logsByDay).forEach((dk) => {
+      const day = ensureDayLog(dk);
+      const events = day.events || [];
+      events.forEach((ev) => {
+        if (!ev || ev.deckId !== deckId) return;
+        const c = cardById[ev.cardId];
+        if (!c) return;
+        const key = normalizeTag(c[tagField]) || "(未标注)";
+        if (!acc[key]) acc[key] = { key, total: 0, correct: 0 };
+        acc[key].total += 1;
+        if (ev.correct) acc[key].correct += 1;
+      });
+    });
+
+    return Object.values(acc).sort((a, b) => {
+      const aAcc = a.total ? a.correct / a.total : 0;
+      const bAcc = b.total ? b.correct / b.total : 0;
+      if (aAcc !== bAcc) return aAcc - bAcc;
+      return b.total - a.total;
+    });
+  }
+
+  function renderTagAccTable(containerId, items) {
+    const rows = items
+      .slice(0, 30)
+      .map((it) => {
+        const acc = it.total ? Math.round((it.correct / it.total) * 100) : 0;
+        return `
+          <div class="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+            <div class="text-sm font-semibold">${escapeHtml(it.key)}</div>
+            <div class="text-xs text-slate-500">${acc}%（${it.correct}/${it.total}）</div>
+          </div>
+        `;
+      })
+      .join("");
+    $(containerId).html(rows || `<div class="px-3 py-3 text-sm text-slate-500">暂无数据</div>`);
+  }
+
   function renderStats() {
     const deckId = $("#stats-deck-select").val() || state.selectedDeckId;
     if (!deckId || !state.decks[deckId]) return;
@@ -799,7 +887,7 @@
     renderTagAccTable("#stats-pos", posDist);
   }
 
-  // ==== AI drawer (unchanged core) ====
+  // ===== AI drawer =====
   const AI_KEY_STORAGE = "deepseek_api_key";
   const AI_CHAT_STORAGE = "deepseek_chat_v1";
   const AI_MAX_TURNS = 10;
@@ -849,21 +937,14 @@
         let contentHtml;
         if (m.role === "user") {
           contentHtml = escapeHtml(m.content);
+        } else if (m._loading) {
+          contentHtml = escapeHtml(m.content);
+        } else if (m._error) {
+          contentHtml = `<p class=\"text-red-700\">${escapeHtml(m.content)}</p>`;
         } else {
-          if (m._loading) {
-            contentHtml = escapeHtml(m.content);
-          } else if (m._error) {
-            contentHtml = `<p class=\"text-red-700\">${escapeHtml(m.content)}</p>`;
-          } else {
-            contentHtml = DOMPurify.sanitize(marked.parse(m.content));
-          }
+          contentHtml = DOMPurify.sanitize(marked.parse(m.content));
         }
-
-        let extraClasses = "";
-        if (m._loading) extraClasses += " loading";
-        if (m._error) extraClasses += " error";
-
-        return `<div class=\"ai-message ${cls} ${extraClasses}\">${contentHtml}</div>`;
+        return `<div class=\"ai-message ${cls}\">${contentHtml}</div>`;
       })
       .join("");
 
@@ -887,11 +968,7 @@
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages,
-          temperature: 0.3,
-        }),
+        body: JSON.stringify({ model: "deepseek-chat", messages, temperature: 0.3 }),
         signal: controller.signal,
       });
 
@@ -930,16 +1007,119 @@
     );
   }
 
+  // ===== Events =====
   function initEvents() {
     $(document).on("click", ".nav-btn", function () {
       const view = $(this).data("view");
       renderNav(view);
-      if (view === "review") {
-        renderReviewSummary();
+      if (view === "review") renderReviewSummary();
+      if (view === "stats") renderStats();
+    });
+
+    $("#new-per-day").on("change", function () {
+      let v = Number($(this).val());
+      if (!Number.isFinite(v) || v < 0) v = 0;
+      v = Math.round(v);
+      state.settings.newPerDay = v;
+      $("#new-per-day").val(String(v));
+      saveState();
+      renderReviewSummary();
+      toast("已更新每日新增上限");
+    });
+
+    $("#review-mode").on("change", function () {
+      const val = $(this).val();
+      const mode = val === "zh2en" ? "zh2en" : "en2zh";
+      state.settings.reviewMode = mode;
+      $("#review-mode").val(mode);
+      saveState();
+      if (reviewSession.currentCardId) {
+        showCard(reviewSession.currentCardId);
       }
-      if (view === "stats") {
-        renderStats();
+    });
+
+    $("#new-per-day").on("change", function () {
+      let v = Number($(this).val());
+      if (!Number.isFinite(v) || v < 0) v = 0;
+      v = Math.round(v);
+      state.settings.newPerDay = v;
+      $("#new-per-day").val(String(v));
+      saveState();
+      renderReviewSummary();
+      toast("已更新每日新增上限");
+    });
+
+    // deck buttons
+    $("#btn-create-deck").on("click", function () {
+      const name = $("#new-deck-name").val().trim();
+      if (!name) {
+        toast("请输入牌组名称");
+        return;
       }
+      const id = uid("deck");
+      const at = nowMs();
+      state.decks[id] = { id, name, createdAt: at, updatedAt: at };
+      state.selectedDeckId = id;
+      $("#new-deck-name").val("");
+      saveState();
+      renderDeckSelects();
+      renderDeckList();
+      renderReviewSummary();
+      renderStats();
+      toast("已创建");
+    });
+
+    $(document).on("click", ".btn-select-deck", function () {
+      const id = $(this).data("id");
+      setSelectedDeck(id);
+    });
+
+    $(document).on("click", ".btn-rename-deck", function () {
+      const id = $(this).data("id");
+      const d = state.decks[id];
+      if (!d) return;
+      const name = prompt("新名称：", d.name);
+      if (!name) return;
+      d.name = name.trim();
+      d.updatedAt = nowMs();
+      state.decks[id] = d;
+      saveState();
+      renderDeckSelects();
+      renderDeckList();
+      renderReviewSummary();
+      renderStats();
+      toast("已重命名");
+    });
+
+    $(document).on("click", ".btn-delete-deck", function () {
+      const id = $(this).data("id");
+      if (!state.decks[id]) return;
+      if (!confirm("确定删除该牌组？（卡片也会一起删除）")) return;
+      Object.keys(state.cards).forEach((cid) => {
+        if (state.cards[cid].deckId === id) delete state.cards[cid];
+      });
+      delete state.decks[id];
+      ensureSelectedDeck();
+      saveState();
+      renderDeckSelects();
+      renderDeckList();
+      renderReviewSummary();
+      renderStats();
+      toast("已删除");
+    });
+
+    // export/reset
+    $("#btn-export").on("click", function () {
+      exportJson();
+    });
+
+    $("#btn-reset").on("click", function () {
+      if (!confirm("确定清空全部数据？该操作不可撤销。")) return;
+      localStorage.removeItem(STORAGE_KEY);
+      state = defaultState();
+      saveState();
+      renderAll();
+      toast("已清空");
     });
 
     // session buttons
@@ -967,7 +1147,7 @@
 
       $("#session-choice").addClass("hidden");
       $("#review-card-area").removeClass("hidden");
-
+      $("#review-preview").addClass("hidden");
       showNextCard();
     }
 
@@ -975,8 +1155,22 @@
     $("#btn-start-review").on("click", () => startReviewSession("review"));
     $("#btn-start-reinforce").on("click", () => startReviewSession("reinforce"));
 
+    $("#btn-preview-review").on("click", () => renderSessionPreview("review"));
+    $("#btn-preview-reinforce").on("click", () => renderSessionPreview("reinforce"));
+
+    $("#btn-back-to-choice").on("click", function () {
+      reviewSession.queue = [];
+      reviewSession.index = 0;
+      reviewSession.currentCardId = null;
+      reviewSession.sessionMode = null;
+      $("#review-card-area").addClass("hidden");
+      $("#session-choice").removeClass("hidden");
+      renderReviewSummary();
+      toast("已返回选择界面");
+    });
+
     $("#btn-show").on("click", function () {
-      const mode = (state.settings && state.settings.reviewMode) || "en2zh";
+      const mode = state.settings.reviewMode || "en2zh";
       if (mode !== "en2zh") return;
       if (!reviewSession.currentCardId) return;
       $("#card-back").removeClass("hidden");
@@ -993,6 +1187,73 @@
       const card = state.cards[reviewSession.currentCardId];
       if (!card) return;
       pronounceText(card.front);
+    });
+
+    $("#btn-check-spell").on("click", function () {
+      const card = state.cards[reviewSession.currentCardId];
+      if (!card) return;
+
+      const rawInput = String($("#spell-input").val() || "");
+      const input = rawInput.trim();
+      if (!input) {
+        $("#spell-feedback")
+          .text("请输入拼写")
+          .removeClass("text-green-700")
+          .addClass("text-red-600");
+        return;
+      }
+
+      const normalize = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+      const target = normalize(card.front);
+      const user = normalize(input);
+
+      const correct = user === target;
+
+      if (correct) {
+        $("#spell-feedback")
+          .text("正确！已按“记得”计入统计")
+          .removeClass("text-red-600")
+          .addClass("text-green-700");
+        
+        // 只有这里调用 gradeCurrent(5)，它内部会调用 showNextCard()
+        gradeCurrent(5);
+      } else {
+        $("#spell-feedback")
+          .text(`不完全正确，请重试`)
+          .removeClass("text-green-700")
+          .addClass("text-red-600");
+        
+        // 记录一次错误（grade=0），但不切卡
+        const cardId = reviewSession.currentCardId;
+        const card = state.cards[cardId];
+        if (card) {
+           const at = nowMs();
+           // 只记录 log，不修改 card 的 interval/ef（或者你也想修改？通常拼错一次就算忘了）
+           // 这里我们按“忘了”处理：applyGrade(card, 0, at)
+           // 注意：如果这里 applyGrade 会导致 card 的 interval 变短。
+           // 如果用户希望“拼错不跳卡”，通常意味着他想在当前界面直到拼对。
+           // 但“忘了”这个事实已经发生了。
+           // 策略：记录一次 grade=0 的 log，并更新卡片状态为“忘了”，但不调用 showNextCard。
+           
+           applyGrade(card, 0, at);
+           const mode = state.settings.reviewMode || "en2zh";
+           logReview(card.deckId, card.id, 0, at, reviewSession.currentKind, mode);
+           saveState();
+           renderReviewSummary();
+           renderStats();
+           toast("已记录为“忘了”，请继续尝试拼写");
+        }
+      }
+    });
+
+    $("#btn-reveal-spell").on("click", function () {
+      const card = state.cards[reviewSession.currentCardId];
+      if (!card) return;
+      const answer = String(card.front || "").trim();
+      $("#spell-input").val(answer);
+      $("#spell-feedback")
+        .text(`答案：${answer}`)
+        .removeClass("text-green-700 text-red-600");
     });
 
     // import
@@ -1016,7 +1277,7 @@
       commitImport(importParsed.items, deckId, dupMode);
     });
 
-    // deck changes
+    // deck select in review
     $("#review-deck-select").on("change", function () {
       const id = $(this).val();
       if (id) {
@@ -1025,7 +1286,7 @@
       }
     });
 
-    // grading
+    // grading & skip
     $(".grade-btn").on("click", function () {
       const grade = $(this).data("grade");
       gradeCurrent(grade);
@@ -1037,20 +1298,50 @@
       showNextCard();
     });
 
-    $("#btn-back-to-choice").on("click", function () {
-      // 终止当前会话并返回选择面板
-      reviewSession.queue = [];
-      reviewSession.index = 0;
-      reviewSession.currentCardId = null;
-      reviewSession.sessionMode = null;
+    // keyboard shortcuts in review view
+    $(document).on("keydown", function (e) {
+      const activeViewIsReview = !$("#view-review").hasClass("hidden");
+      if (!activeViewIsReview) return;
 
-      $("#review-card-area").addClass("hidden");
-      $("#session-choice").removeClass("hidden");
-      renderReviewSummary();
-      toast("已返回选择界面");
+      const tag = (e.target && e.target.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+      const key = e.key.toLowerCase();
+
+      if (key === " " || key === "spacebar") {
+        // Space: show meaning
+        const mode = state.settings.reviewMode || "en2zh";
+        if (mode === "en2zh" && !$("#btn-show").prop("disabled")) {
+          e.preventDefault();
+          $("#btn-show").trigger("click");
+        }
+      } else if (key === "v") {
+        e.preventDefault();
+        const mode = state.settings.reviewMode || "en2zh";
+        if (mode === "en2zh") $("#btn-pronounce-en2zh").trigger("click");
+        else $("#btn-pronounce").trigger("click");
+      } else if (key === "j") {
+        e.preventDefault();
+        $(".grade-btn[data-grade=0]").trigger("click");
+      } else if (key === "k") {
+        e.preventDefault();
+        $(".grade-btn[data-grade=3]").trigger("click");
+      } else if (key === "l") {
+        e.preventDefault();
+        $(".grade-btn[data-grade=5]").trigger("click");
+      }
     });
 
-    // AI drawer init minimal
+    // stats deck select
+    $("#stats-deck-select").on("change", function () {
+      const id = $(this).val();
+      if (id) {
+        setSelectedDeck(id);
+        renderStats();
+      }
+    });
+
+    // AI drawer basic
     $("#ai-api-key").val(loadAiKey());
     renderAiMessages();
     $("#btn-toggle-ai").on("click", function () {
@@ -1105,10 +1396,10 @@
   }
 
   function renderReviewControls() {
-    $("#new-per-day").val(String(Number(state.settings && state.settings.newPerDay) || 0));
-    $("#review-mode").val((state.settings && state.settings.reviewMode) || "en2zh");
-    $("#filter-topic").val((state.settings && state.settings.filterTopic) || "");
-    $("#filter-pos").val((state.settings && state.settings.filterPos) || "");
+    $("#new-per-day").val(String(Number(state.settings.newPerDay) || 0));
+    $("#review-mode").val(state.settings.reviewMode || "en2zh");
+    $("#filter-topic").val(state.settings.filterTopic || "");
+    $("#filter-pos").val(state.settings.filterPos || "");
   }
 
   function renderAll() {
@@ -1120,7 +1411,6 @@
     renderStats();
   }
 
-  let state = loadState();
   ensureSelectedDeck();
 
   $(function () {
