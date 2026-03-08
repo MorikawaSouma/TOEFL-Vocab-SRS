@@ -43,6 +43,34 @@
   }
 
   // ===== TTS =====
+  let _cachedVoice = null;
+  
+  function getPreferredVoice() {
+    if (_cachedVoice) return _cachedVoice;
+    
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices.length) return null;
+
+    // 优先级：Samantha (Mac 经典女声) > Google US English > Microsoft Zira > 任何 en-US > 任何 en
+    // 尽量避开明确标记 male 的
+    const preferred = voices.find(v => v.name === "Samantha") || 
+                      voices.find(v => v.name === "Google US English") ||
+                      voices.find(v => v.name.includes("Samantha")) ||
+                      voices.find(v => v.lang === "en-US" && !v.name.toLowerCase().includes("male")) || 
+                      voices.find(v => v.lang === "en-US");
+    
+    if (preferred) _cachedVoice = preferred;
+    return preferred;
+  }
+
+  // 监听 voiceschanged 事件（Chrome 等浏览器初次加载可能是空的，需要等事件触发）
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.onvoiceschanged = () => {
+      _cachedVoice = null; // 清空缓存，重新获取
+      getPreferredVoice();
+    };
+  }
+
   function pronounceText(text) {
     const t = String(text || "").trim();
     if (!t) return;
@@ -52,6 +80,18 @@
     }
     const u = new SpeechSynthesisUtterance(t);
     u.lang = "en-US";
+    
+    // 尝试获取更好的声音
+    const voice = getPreferredVoice();
+    if (voice) {
+      u.voice = voice;
+    } else {
+      // 如果第一次没取到（可能 voiceschanged 还没触发），再尝试取一次
+      // 有些浏览器（Safari）可能不需要 voiceschanged，直接取就有
+      const retryVoice = getPreferredVoice();
+      if (retryVoice) u.voice = retryVoice;
+    }
+
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
   }
@@ -369,7 +409,7 @@
 
   function renderImportPreview(previewItems, errors, dupInfo) {
     const rows = previewItems
-      .slice(0, 200)
+      // .slice(0, 200) // 移除显示限制
       .map(
         (it) => `
         <div class="flex gap-3 border-b border-slate-100 px-3 py-2">
@@ -596,12 +636,12 @@
     }
 
     const total = ids.length;
-    const limit = 200;
-    const shown = Math.min(total, limit);
+    // const limit = 200; // 用户建议不设限制
+    // const shown = Math.min(total, limit);
 
     $("#review-preview-title").text(
       total
-        ? `${title}：共 ${total} 张，当前显示前 ${shown} 张`
+        ? `${title}：共 ${total} 张`
         : `${title}：当前没有卡片`
     );
 
@@ -613,7 +653,7 @@
       return;
     }
 
-    const rows = ids.slice(0, limit)
+    const rows = ids
       .map((id) => {
         const c = state.cards[id];
         if (!c) return "";
@@ -1111,6 +1151,45 @@
     // export/reset
     $("#btn-export").on("click", function () {
       exportJson();
+    });
+
+    // import backup (JSON)
+    $("#backup-file").on("change", function (e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function (ev) {
+        try {
+          const content = ev.target.result;
+          const parsed = JSON.parse(content);
+          // 简单的校验
+          if (!parsed || typeof parsed !== "object" || !parsed.decks || !parsed.cards) {
+            throw new Error("数据格式不正确");
+          }
+
+          if (!confirm("导入备份将覆盖当前所有数据（包括进度），确定继续吗？")) {
+            $("#backup-file").val("");
+            return;
+          }
+
+          // 恢复数据
+          state = parsed;
+          // 确保版本兼容性等（如果需要），这里暂且直接覆盖
+          saveState();
+          
+          // 刷新界面
+          renderAll();
+          renderNav("decks"); // 默认回牌组页
+          toast("备份已成功导入");
+        } catch (err) {
+          console.error(err);
+          toast("导入失败：JSON 格式错误或文件损坏");
+        } finally {
+          $("#backup-file").val(""); // 清空，以便下次能选同一个文件
+        }
+      };
+      reader.readAsText(file);
     });
 
     $("#btn-reset").on("click", function () {
